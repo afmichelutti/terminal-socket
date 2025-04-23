@@ -109,7 +109,7 @@ async function handleQueryRequest(message) {
             const result = await database.executeQuery(post.content.query);
             return JSON.stringify({
                 api_status: 1,
-                api_message: 'success',
+                api_message: 'sucess', // Alterado para manter compatibilidade com API Delphi
                 data: result
             });
         }

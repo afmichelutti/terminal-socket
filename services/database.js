@@ -81,24 +81,50 @@ async function executeQuery(query) {
         let connection = null;
         try {
             connection = await getConnection();
-
-            // Aplicar sanitização radical na query para remover qualquer caractere problemático
             const sanitizedQuery = sanitizeQueryCompletely(query);
-
             logger.info(`Executando query sanitizada: ${sanitizedQuery}`);
 
             const queryAsync = promisify(connection.query).bind(connection);
             const result = await queryAsync(sanitizedQuery);
 
-            // Converter nomes de colunas para lowercase e restaurar acentos nos resultados
+            // Obtém o primeiro registro não-nulo para inferir tipos
+            const sampleRecord = result.find(row =>
+                Object.values(row).some(val => val !== null)
+            ) || {};
+
+            // Mapeia os tipos de cada coluna baseado na amostra
+            const columnTypes = {};
+            for (const key in sampleRecord) {
+                const value = sampleRecord[key];
+                // Inferir tipo baseado no valor de exemplo
+                columnTypes[key.toLowerCase()] = typeof value;
+            }
+
+            // Converter e formatar resultados para compatibilidade
             const formattedResult = result.map(row => {
                 const newRow = {};
                 for (const key in row) {
                     const lowerKey = key.toLowerCase();
                     let value = row[key];
 
-                    // Restaurar acentos em valores de texto específicos
+                    // Converter null baseado no tipo inferido
+                    if (value === null) {
+                        // Se tivermos informação sobre o tipo dessa coluna
+                        if (columnTypes[lowerKey] === 'number') {
+                            value = 0;
+                        } else {
+                            value = '';
+                        }
+                    }
+
+                    // Formatar datas no estilo da API legada (YYYY-MM-DD)
+                    if (value instanceof Date) {
+                        value = value.toISOString().split('T')[0];
+                    }
+
+                    // Remover espaços extras e restaurar acentos
                     if (typeof value === 'string') {
+                        value = value.trim();
                         value = restoreAccents(value);
                     }
 
