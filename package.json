@@ -1,0 +1,21 @@
+{
+  "name": "terminal-socket",
+  "version": "1.0.0",
+  "description": "Serviço para comunicação com servidor via WebSocket e acesso a banco de dados Firebird",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "install-service": "node service.js",
+    "uninstall-service": "node uninstall-service.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "ini": "^3.0.1",
+    "node-firebird": "^1.1.9",
+    "node-os-utils": "^1.3.7",
+    "node-windows": "^1.0.0-beta.8",
+    "systeminformation": "^5.17.12",
+    "ws": "^8.13.0"
+  }
+}

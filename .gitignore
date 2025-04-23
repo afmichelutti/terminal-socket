@@ -1,0 +1,63 @@
+# Dependências
+node_modules/
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+package-lock.json
+
+# Arquivos de ambiente
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+logs/
+*.log
+log_terminal.txt
+
+# Arquivos de runtime
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Arquivos temporários
+.tmp/
+.temp/
+
+# Arquivos de configuração do serviço Windows
+daemon/
+
+# Arquivos específicos do sistema
+.DS_Store
+Thumbs.db
+
+# Arquivos gerados durante a execução
+terminal.ini
+
+# Arquivos de IDE e editores
+.idea/
+.vscode/
+*.swp
+*.swo
+.vs/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Arquivos de debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Arquivos de build
+dist/
+build/
+
+# Arquivos de teste
+coverage/
+.nyc_output/
