@@ -73,60 +73,30 @@ async function releaseConnection(connection) {
     }
 }
 
-// Adicione esta função
-function formatQuery(query) {
-    // Tratamento de datas
-    const dateRegex = /'(\d{1,2})\/(\d{1,2})\/(\d{4})'/g;
-    let formattedQuery = query.replace(dateRegex, (match, month, day, year) => {
-        const formattedMonth = month.padStart(2, '0');
-        const formattedDay = day.padStart(2, '0');
-        return `'${year}-${formattedMonth}-${formattedDay}'`;
-    });
-
-    // Escapa aspas simples dentro de strings (para evitar problemas de SQL injection)
-    formattedQuery = formattedQuery.replace(/'([^']*)'/g, (match, content) => {
-        // Substituir aspas simples por duplas dentro da string
-        const escapedContent = content.replace(/'/g, "''");
-        return `'${escapedContent}'`;
-    });
-
-    // Log para depuração
-    logger.info(`Query original: ${query}`);
-    logger.info(`Query formatada: ${formattedQuery}`);
-
-    return formattedQuery;
-}
-
 // Executar uma consulta SQL
 async function executeQuery(query) {
     let connection = null;
     try {
         connection = await getConnection();
-        const formattedQuery = formatQuery(query);
 
-        // Promisify a função de query
+        // Remover o formatQuery e usar o sistema de parâmetros do próprio driver
+        // Exemplo de como seria se você tivesse controle sobre os parâmetros:
+        // const result = await queryAsync("SELECT * FROM tabela WHERE data >= ?", ['2023-06-01']);
+
+        // Como isso não é possível com a string de consulta que vem pronta, tente:
         const queryAsync = promisify(connection.query).bind(connection);
+        const result = await queryAsync(query);
 
-        try {
-            // Executar consulta com a query formatada
-            const result = await queryAsync(formattedQuery);
+        // Converter nomes de colunas para lowercase
+        const formattedResult = result.map(row => {
+            const newRow = {};
+            for (const key in row) {
+                newRow[key.toLowerCase()] = row[key];
+            }
+            return newRow;
+        });
 
-            // Converter nomes de colunas para lowercase
-            const formattedResult = result.map(row => {
-                const newRow = {};
-                for (const key in row) {
-                    newRow[key.toLowerCase()] = row[key];
-                }
-                return newRow;
-            });
-
-            return formattedResult;
-        } catch (queryError) {
-            // Log detalhado do erro específico da consulta
-            logger.error(`Erro de SQL: ${queryError.message}`);
-            logger.error(`Query que causou o erro: ${formattedQuery}`);
-            throw queryError;
-        }
+        return formattedResult;
     } catch (error) {
         logger.error(`Erro ao executar consulta: ${error.message}`);
         throw error;
@@ -193,6 +163,24 @@ async function getTerminalToken() {
             await releaseConnection(connection);
         }
     }
+}
+
+// Formatar consulta SQL
+function formatQuery(query) {
+    // Apenas tratar as datas, sem mexer em outras partes da string
+    const dateRegex = /'(\d{1,2})\/(\d{1,2})\/(\d{4})'/g;
+    let formattedQuery = query.replace(dateRegex, (match, month, day, year) => {
+        const formattedMonth = month.padStart(2, '0');
+        const formattedDay = day.padStart(2, '0');
+        return `'${year}-${formattedMonth}-${formattedDay}'`;
+    });
+
+    // Remover o processamento de aspas que pode estar causando problemas
+
+    logger.info(`Query original: ${query}`);
+    logger.info(`Query formatada: ${formattedQuery}`);
+
+    return formattedQuery;
 }
 
 // Fechar pool de conexões
