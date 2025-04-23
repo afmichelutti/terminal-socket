@@ -74,13 +74,19 @@ async function releaseConnection(connection) {
 
 // Adicione esta função
 function formatQuery(query) {
-    // Regex para encontrar datas no formato MM/DD/YYYY
-    const dateRegex = /'(\d{2})\/(\d{2})\/(\d{4})'/g;
-
-    // Substituir pelo formato YYYY-MM-DD
-    return query.replace(dateRegex, (match, month, day, year) => {
-        return `'${year}-${month}-${day}'`;
+    // Tratamento de datas
+    const dateRegex = /'(\d{1,2})\/(\d{1,2})\/(\d{4})'/g;
+    let formattedQuery = query.replace(dateRegex, (match, month, day, year) => {
+        const formattedMonth = month.padStart(2, '0');
+        const formattedDay = day.padStart(2, '0');
+        return `'${year}-${formattedMonth}-${formattedDay}'`;
     });
+
+    // Log para depuração - ajuda a verificar como a query está sendo transformada
+    logger.info(`Query original: ${query}`);
+    logger.info(`Query formatada: ${formattedQuery}`);
+
+    return formattedQuery;
 }
 
 // Executar uma consulta SQL
@@ -88,24 +94,31 @@ async function executeQuery(query) {
     let connection = null;
     try {
         connection = await getConnection();
-        const formattedQuery = formatQuery(query); // Adicione esta linha
+        const formattedQuery = formatQuery(query);
 
-        // Promisify6 a função de query
+        // Promisify a função de query
         const queryAsync = promisify(connection.query).bind(connection);
 
-        // Executar consulta com a query formatada
-        const result = await queryAsync(formattedQuery); // Use a query formatada aqui
+        try {
+            // Executar consulta com a query formatada
+            const result = await queryAsync(formattedQuery);
 
-        // Converter nomes de colunas para lowercase (similar ao caseNameDefinition no código Delphi)
-        const formattedResult = result.map(row => {
-            const newRow = {};
-            for (const key in row) {
-                newRow[key.toLowerCase()] = row[key];
-            }
-            return newRow;
-        });
+            // Converter nomes de colunas para lowercase
+            const formattedResult = result.map(row => {
+                const newRow = {};
+                for (const key in row) {
+                    newRow[key.toLowerCase()] = row[key];
+                }
+                return newRow;
+            });
 
-        return formattedResult;
+            return formattedResult;
+        } catch (queryError) {
+            // Log detalhado do erro específico da consulta
+            logger.error(`Erro de SQL: ${queryError.message}`);
+            logger.error(`Query que causou o erro: ${formattedQuery}`);
+            throw queryError;
+        }
     } catch (error) {
         logger.error(`Erro ao executar consulta: ${error.message}`);
         throw error;
