@@ -16,15 +16,6 @@ async function main() {
         // Inicializar banco de dados
         await database.initialize();
         logger.info('Conexão com banco de dados inicializada');
-
-        // Execute os testes de diagnóstico
-        try {
-            await database.testarQueryPorPartes();
-            logger.info("Testes de diagnóstico concluídos com sucesso");
-        } catch (error) {
-            logger.error(`Falha nos testes de diagnóstico: ${error.message}`);
-        }
-
         // Obter o token do terminal - ADICIONANDO RETRY E VALIDAÇÃO
         terminal = await getValidTerminalToken();
         logger.info('Terminal: ' + terminal);

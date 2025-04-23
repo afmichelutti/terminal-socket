@@ -75,33 +75,42 @@ async function releaseConnection(connection) {
 
 // Executar uma consulta SQL
 async function executeQuery(query) {
-    let connection = null;
     try {
-        connection = await getConnection();
+        // Para consultas complexas que estavam falhando
+        if (query.includes('case tipo_ordem when') || query.length > 500) {
+            logger.info("Detectada consulta complexa, usando estratégia alternativa");
+            return await executeLargeQuery(query);
+        }
 
-        // Substituir caracteres acentuados na query para evitar problemas de encoding
-        const sanitizedQuery = sanitizeQuery(query);
+        // Para consultas simples, método normal
+        let connection = null;
+        try {
+            connection = await getConnection();
 
-        const queryAsync = promisify(connection.query).bind(connection);
-        const result = await queryAsync(sanitizedQuery);
+            // Substituir caracteres acentuados na query para evitar problemas de encoding
+            const sanitizedQuery = sanitizeQuery(query);
 
-        // Converter nomes de colunas para lowercase
-        const formattedResult = result.map(row => {
-            const newRow = {};
-            for (const key in row) {
-                newRow[key.toLowerCase()] = row[key];
+            const queryAsync = promisify(connection.query).bind(connection);
+            const result = await queryAsync(sanitizedQuery);
+
+            // Converter nomes de colunas para lowercase
+            const formattedResult = result.map(row => {
+                const newRow = {};
+                for (const key in row) {
+                    newRow[key.toLowerCase()] = row[key];
+                }
+                return newRow;
+            });
+
+            return formattedResult;
+        } finally {
+            if (connection) {
+                await releaseConnection(connection);
             }
-            return newRow;
-        });
-
-        return formattedResult;
+        }
     } catch (error) {
         logger.error(`Erro ao executar consulta: ${error.message}`);
         throw error;
-    } finally {
-        if (connection) {
-            await releaseConnection(connection);
-        }
     }
 }
 
@@ -246,6 +255,62 @@ async function testarQueryPorPartes(query) {
     }
 }
 
+// Adicione esta função no arquivo
+async function executeLargeQuery(query) {
+    logger.info("Executando consulta complexa usando estratégia alternativa");
+
+    let connection = null;
+    try {
+        connection = await getConnection();
+
+        // Remover a formatação de datas que já está funcionando
+        const dateRegex = /'(\d{1,2})\/(\d{1,2})\/(\d{4})'/g;
+        let processedQuery = query.replace(dateRegex, (match, month, day, year) => {
+            const formattedMonth = month.padStart(2, '0');
+            const formattedDay = day.padStart(2, '0');
+            return `'${year}-${formattedMonth}-${formattedDay}'`;
+        });
+
+        // Em vez de substituir acentos, vamos usar uma estratégia diferente:
+        // Criar uma VIEW temporária para a consulta
+
+        // Nome único para a view temporária
+        const viewName = `TEMP_VIEW_${Date.now().toString().substring(5)}`;
+        const createViewSql = `CREATE OR ALTER VIEW ${viewName} AS ${processedQuery}`;
+
+        // Executar criação da view
+        const queryAsync = promisify(connection.query).bind(connection);
+        await queryAsync(createViewSql);
+        logger.info(`View temporária ${viewName} criada com sucesso`);
+
+        // Executar consulta na view (mais simples, sem acentos na própria consulta)
+        const result = await queryAsync(`SELECT * FROM ${viewName}`);
+        logger.info(`Consulta executada com sucesso via view temporária`);
+
+        // Remover a view temporária
+        await queryAsync(`DROP VIEW ${viewName}`);
+        logger.info(`View temporária ${viewName} removida`);
+
+        // Formatar resultado
+        const formattedResult = result.map(row => {
+            const newRow = {};
+            for (const key in row) {
+                newRow[key.toLowerCase()] = row[key];
+            }
+            return newRow;
+        });
+
+        return formattedResult;
+    } catch (error) {
+        logger.error(`Erro ao usar estratégia alternativa: ${error.message}`);
+        throw error;
+    } finally {
+        if (connection) {
+            await releaseConnection(connection);
+        }
+    }
+}
+
 // Formatar consulta SQL
 function formatQuery(query) {
     // Apenas tratar as datas, sem mexer em outras partes da string
@@ -279,5 +344,6 @@ module.exports = {
     executeCommand,
     getTerminalToken,
     close,
-    testarQueryPorPartes
+    testarQueryPorPartes,
+    executeLargeQuery
 };
