@@ -79,13 +79,11 @@ async function executeQuery(query) {
     try {
         connection = await getConnection();
 
-        // Remover o formatQuery e usar o sistema de parâmetros do próprio driver
-        // Exemplo de como seria se você tivesse controle sobre os parâmetros:
-        // const result = await queryAsync("SELECT * FROM tabela WHERE data >= ?", ['2023-06-01']);
+        // Substituir caracteres acentuados na query para evitar problemas de encoding
+        const sanitizedQuery = sanitizeQuery(query);
 
-        // Como isso não é possível com a string de consulta que vem pronta, tente:
         const queryAsync = promisify(connection.query).bind(connection);
-        const result = await queryAsync(query);
+        const result = await queryAsync(sanitizedQuery);
 
         // Converter nomes de colunas para lowercase
         const formattedResult = result.map(row => {
@@ -105,6 +103,27 @@ async function executeQuery(query) {
             await releaseConnection(connection);
         }
     }
+}
+
+// Função para sanitizar a query
+function sanitizeQuery(query) {
+    // Converter datas de MM/DD/YYYY para YYYY-MM-DD
+    const dateRegex = /'(\d{1,2})\/(\d{1,2})\/(\d{4})'/g;
+    let sanitized = query.replace(dateRegex, (match, month, day, year) => {
+        const formattedMonth = month.padStart(2, '0');
+        const formattedDay = day.padStart(2, '0');
+        return `'${year}-${formattedMonth}-${formattedDay}'`;
+    });
+
+    // Remover acentos ou substituir caracteres problemáticos
+    sanitized = sanitized
+        .replace(/Produção/g, 'Producao')
+        .replace(/Serviço/g, 'Servico');
+
+    logger.info(`Query original: ${query}`);
+    logger.info(`Query sanitizada: ${sanitized}`);
+
+    return sanitized;
 }
 
 // Executar comando SQL (sem retorno de dados)
@@ -165,6 +184,68 @@ async function getTerminalToken() {
     }
 }
 
+// Adicione esta função no arquivo
+async function testarQueryPorPartes(query) {
+    let connection = null;
+    try {
+        connection = await getConnection();
+        const queryAsync = promisify(connection.query).bind(connection);
+
+        // Testes simples para verificar a conexão básica
+        logger.info("===== INICIANDO TESTES DE DIAGNÓSTICO =====");
+
+        try {
+            const test1 = await queryAsync("SELECT CURRENT_DATE FROM RDB$DATABASE");
+            logger.info("✅ Teste básico OK");
+        } catch (err) {
+            logger.error(`❌ Falha no teste básico: ${err.message}`);
+        }
+
+        // Testando texto com acento
+        try {
+            const test2 = await queryAsync("SELECT 'Teste' FROM RDB$DATABASE");
+            logger.info("✅ Teste com texto simples OK");
+        } catch (err) {
+            logger.error(`❌ Falha no teste com texto simples: ${err.message}`);
+        }
+
+        // Testando especificamente a parte com acentos
+        try {
+            const test3 = await queryAsync("SELECT case 'C' when 'C' then 'Corte' when 'P' then 'Producao' end FROM RDB$DATABASE");
+            logger.info("✅ Teste com CASE sem acentos OK");
+        } catch (err) {
+            logger.error(`❌ Falha no teste com CASE sem acentos: ${err.message}`);
+        }
+
+        // Testando com acentos
+        try {
+            const test4 = await queryAsync("SELECT 'Produção' FROM RDB$DATABASE");
+            logger.info("✅ Teste com texto acentuado OK");
+        } catch (err) {
+            logger.error(`❌ Falha no teste com texto acentuado: ${err.message}`);
+        }
+
+        // Testando formato de data
+        try {
+            const test5 = await queryAsync("SELECT CAST('2023-06-01' AS DATE) FROM RDB$DATABASE");
+            logger.info("✅ Teste com data OK");
+        } catch (err) {
+            logger.error(`❌ Falha no teste com data: ${err.message}`);
+        }
+
+        logger.info("===== FIM DOS TESTES DE DIAGNÓSTICO =====");
+        return "Testes concluídos";
+
+    } catch (error) {
+        logger.error(`Erro geral nos testes: ${error.message}`);
+        throw error;
+    } finally {
+        if (connection) {
+            await releaseConnection(connection);
+        }
+    }
+}
+
 // Formatar consulta SQL
 function formatQuery(query) {
     // Apenas tratar as datas, sem mexer em outras partes da string
@@ -197,5 +278,6 @@ module.exports = {
     executeQuery,
     executeCommand,
     getTerminalToken,
-    close
+    close,
+    testarQueryPorPartes
 };
