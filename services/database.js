@@ -14,10 +14,9 @@ let dbConfig = {
 
 let dbPool = null;
 
-// Inicializar pool de conexões
+// Modificar a função initialize para usar conexão direta
 async function initialize() {
     try {
-        // Carregar configurações do INI
         await config.load();
 
         // Usar as configurações do ambiente, com fallback para o INI
@@ -28,16 +27,22 @@ async function initialize() {
             password: process.env.FB_PASSWORD || config.read('Database', 'password') || 'masterkey',
             port: parseInt(process.env.FB_PORT || config.read('Database', 'port') || '3050', 10),
             lowercase_keys: true,
-            pageSize: 4096,
-            charset: 'NONE' // Alterar de UTF8 para NONE para corresponder ao IBExpert
+            charset: 'WIN1252'
         };
 
-        // Criar pool de conexões
-        dbPool = Firebird.pool(5, dbConfig);
+        // Teste de conexão direta
+        const testConnection = await new Promise((resolve, reject) => {
+            Firebird.attach(dbConfig, (err, db) => {
+                if (err) reject(err);
+                else {
+                    db.detach();
+                    resolve(true);
+                }
+            });
+        });
 
-        // Teste de conexão
-        const connection = await getConnection();
-        await releaseConnection(connection);
+        // Criar pool só depois do teste
+        dbPool = Firebird.pool(5, dbConfig);
 
         logger.info('Conexão com banco de dados estabelecida', 'Auditoria');
         return true;
