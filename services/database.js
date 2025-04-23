@@ -75,7 +75,7 @@ async function releaseConnection(connection) {
     }
 }
 
-// Executar uma consulta SQL
+// Modifique a função executeQuery para restaurar os acentos nos resultados
 async function executeQuery(query) {
     try {
         let connection = null;
@@ -90,11 +90,19 @@ async function executeQuery(query) {
             const queryAsync = promisify(connection.query).bind(connection);
             const result = await queryAsync(sanitizedQuery);
 
-            // Converter nomes de colunas para lowercase
+            // Converter nomes de colunas para lowercase e restaurar acentos nos resultados
             const formattedResult = result.map(row => {
                 const newRow = {};
                 for (const key in row) {
-                    newRow[key.toLowerCase()] = row[key];
+                    const lowerKey = key.toLowerCase();
+                    let value = row[key];
+
+                    // Restaurar acentos em valores de texto específicos
+                    if (typeof value === 'string') {
+                        value = restoreAccents(value);
+                    }
+
+                    newRow[lowerKey] = value;
                 }
                 return newRow;
             });
@@ -109,6 +117,35 @@ async function executeQuery(query) {
         logger.error(`Erro ao executar consulta: ${error.message}`);
         throw error;
     }
+}
+
+// Adicione esta nova função para restaurar acentos
+function restoreAccents(text) {
+    // Dicionário reverso para restaurar os acentos nos resultados
+    const valueMap = {
+        'Producao': 'Produção',
+        'Servico': 'Serviço',
+        'Codigo': 'Código',
+        'Descricao': 'Descrição',
+        'Observacao': 'Observação',
+        'Numero': 'Número',
+        'nao': 'não'
+    };
+
+    // Verificar se o texto exato existe no mapa
+    if (valueMap[text]) {
+        return valueMap[text];
+    }
+
+    // Se não for um texto exato, procurar por substituições dentro do texto
+    let restoredText = text;
+    for (const [plain, accented] of Object.entries(valueMap)) {
+        // Usar regex para substituir apenas palavras completas
+        const regex = new RegExp(`\\b${plain}\\b`, 'g');
+        restoredText = restoredText.replace(regex, accented);
+    }
+
+    return restoredText;
 }
 
 // Nova função para sanitização completa
@@ -130,7 +167,18 @@ function sanitizeQueryCompletely(query) {
         "case tipo_ordem when 'C' then 'Corte' when 'P' then 'Producao' when 'S' then 'Servico' end"
     );
 
-    // 3. Sanitizar outros termos específicos com acentos
+    // 3. NOVO: Substituir COALESCE por expressões CASE WHEN equivalentes
+    sanitized = sanitized.replace(
+        /coalesce\s*\(\s*([^,]+)\s*,\s*''\s*\)/gi,
+        "CASE WHEN $1 IS NULL THEN '' ELSE $1 END"
+    );
+
+    sanitized = sanitized.replace(
+        /coalesce\s*\(\s*([^,]+)\s*,\s*0\s*\)/gi,
+        "CASE WHEN $1 IS NULL THEN 0 ELSE $1 END"
+    );
+
+    // 4. Sanitizar outros termos específicos com acentos
     sanitized = sanitized
         .replace(/Produção/g, 'Producao')
         .replace(/Serviço/g, 'Servico')
@@ -140,7 +188,7 @@ function sanitizeQueryCompletely(query) {
         .replace(/Número/g, 'Numero')
         .replace(/não/g, 'nao');
 
-    // 4. Remover todos os acentos restantes usando um mapa de caracteres
+    // 5. Remover todos os acentos restantes usando um mapa de caracteres
     const accentMap = {
         'á': 'a', 'à': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a',
         'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
