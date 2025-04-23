@@ -161,34 +161,24 @@ function sanitizeQueryCompletely(query) {
         return `'${year}-${formattedMonth}-${formattedDay}'`;
     });
 
-    // 2. Substituir CASE complexo por versão sem acentos
+    // 3. Substituir COALESCE e preservar aliases
     sanitized = sanitized.replace(
-        /case tipo_ordem when 'C' then 'Corte' when 'P' then 'Produção'when 'S' then 'Serviço' end/gi,
-        "case tipo_ordem when 'C' then 'Corte' when 'P' then 'Producao' when 'S' then 'Servico' end"
-    );
-
-    // 3. NOVO: Substituir COALESCE por expressões CASE WHEN equivalentes
-    sanitized = sanitized.replace(
-        /coalesce\s*\(\s*([^,]+)\s*,\s*''\s*\)/gi,
-        "CASE WHEN $1 IS NULL THEN '' ELSE $1 END"
+        /coalesce\s*\(\s*([^,]+)\s*,\s*'[^']*'\s*\)(\s+as\s+\w+)/gi,
+        "$1$2"
     );
 
     sanitized = sanitized.replace(
-        /coalesce\s*\(\s*([^,]+)\s*,\s*0\s*\)/gi,
-        "CASE WHEN $1 IS NULL THEN 0 ELSE $1 END"
+        /coalesce\s*\(\s*([^,]+)\s*,\s*0\s*\)(\s+as\s+\w+)/gi,
+        "$1$2"
     );
 
-    // 4. Sanitizar outros termos específicos com acentos
-    sanitized = sanitized
-        .replace(/Produção/g, 'Producao')
-        .replace(/Serviço/g, 'Servico')
-        .replace(/Código/g, 'Codigo')
-        .replace(/Descrição/g, 'Descricao')
-        .replace(/Observação/g, 'Observacao')
-        .replace(/Número/g, 'Numero')
-        .replace(/não/g, 'nao');
+    // 4. Substituir CASE WHEN e preservar aliases
+    sanitized = sanitized.replace(
+        /case\s+when\s+([^\s]+)\s+is\s+null\s+then\s+(?:'[^']*'|null|0)\s+else\s+([^\s]+)\s+end(\s+as\s+\w+)/gi,
+        "$2$3"
+    );
 
-    // 5. Remover todos os acentos restantes usando um mapa de caracteres
+    // 6. Remover todos os acentos restantes usando um mapa de caracteres
     const accentMap = {
         'á': 'a', 'à': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a',
         'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
