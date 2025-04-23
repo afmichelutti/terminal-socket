@@ -28,7 +28,8 @@ async function initialize() {
             password: process.env.FB_PASSWORD || config.read('Database', 'password') || 'masterkey',
             port: parseInt(process.env.FB_PORT || config.read('Database', 'port') || '3050', 10),
             lowercase_keys: true,
-            pageSize: 4096
+            pageSize: 4096,
+            charset: 'UTF8' // Adicione esta linha
         };
 
         // Log para depuração
@@ -82,7 +83,14 @@ function formatQuery(query) {
         return `'${year}-${formattedMonth}-${formattedDay}'`;
     });
 
-    // Log para depuração - ajuda a verificar como a query está sendo transformada
+    // Escapa aspas simples dentro de strings (para evitar problemas de SQL injection)
+    formattedQuery = formattedQuery.replace(/'([^']*)'/g, (match, content) => {
+        // Substituir aspas simples por duplas dentro da string
+        const escapedContent = content.replace(/'/g, "''");
+        return `'${escapedContent}'`;
+    });
+
+    // Log para depuração
     logger.info(`Query original: ${query}`);
     logger.info(`Query formatada: ${formattedQuery}`);
 
