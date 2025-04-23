@@ -72,17 +72,29 @@ async function releaseConnection(connection) {
     }
 }
 
+// Adicione esta função
+function formatQuery(query) {
+    // Regex para encontrar datas no formato MM/DD/YYYY
+    const dateRegex = /'(\d{2})\/(\d{2})\/(\d{4})'/g;
+
+    // Substituir pelo formato YYYY-MM-DD
+    return query.replace(dateRegex, (match, month, day, year) => {
+        return `'${year}-${month}-${day}'`;
+    });
+}
+
 // Executar uma consulta SQL
 async function executeQuery(query) {
     let connection = null;
     try {
         connection = await getConnection();
+        const formattedQuery = formatQuery(query); // Adicione esta linha
 
-        // Promisify a função de query
+        // Promisify6 a função de query
         const queryAsync = promisify(connection.query).bind(connection);
 
-        // Executar consulta
-        const result = await queryAsync(query);
+        // Executar consulta com a query formatada
+        const result = await queryAsync(formattedQuery); // Use a query formatada aqui
 
         // Converter nomes de colunas para lowercase (similar ao caseNameDefinition no código Delphi)
         const formattedResult = result.map(row => {
