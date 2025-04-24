@@ -75,76 +75,6 @@ async function releaseConnection(connection) {
     }
 }
 
-// Modifique a função executeQuery para restaurar os acentos nos resultados
-async function executeQuery(query) {
-    try {
-        let connection = null;
-        try {
-            connection = await getConnection();
-            const sanitizedQuery = sanitizeQueryCompletely(query);
-            logger.info(`Executando query sanitizada: ${sanitizedQuery}`);
-
-            const queryAsync = promisify(connection.query).bind(connection);
-            const result = await queryAsync(sanitizedQuery);
-
-            // Obtém o primeiro registro não-nulo para inferir tipos
-            const sampleRecord = result.find(row =>
-                Object.values(row).some(val => val !== null)
-            ) || {};
-
-            // Mapeia os tipos de cada coluna baseado na amostra
-            const columnTypes = {};
-            for (const key in sampleRecord) {
-                const value = sampleRecord[key];
-                // Inferir tipo baseado no valor de exemplo
-                columnTypes[key.toLowerCase()] = typeof value;
-            }
-
-            // Converter e formatar resultados para compatibilidade
-            const formattedResult = result.map(row => {
-                const newRow = {};
-                for (const key in row) {
-                    const lowerKey = key.toLowerCase();
-                    let value = row[key];
-
-                    // Converter null baseado no tipo inferido
-                    if (value === null) {
-                        // Se tivermos informação sobre o tipo dessa coluna
-                        if (columnTypes[lowerKey] === 'number') {
-                            value = 0;
-                        } else {
-                            value = '';
-                        }
-                    }
-
-                    // Formatar datas no estilo da API legada (YYYY-MM-DD)
-                    if (value instanceof Date) {
-                        value = value.toISOString().split('T')[0];
-                    }
-
-                    // Remover espaços extras e restaurar acentos
-                    if (typeof value === 'string') {
-                        value = value.trim();
-                        value = restoreAccents(value);
-                    }
-
-                    newRow[lowerKey] = value;
-                }
-                return newRow;
-            });
-
-            return formattedResult;
-        } finally {
-            if (connection) {
-                await releaseConnection(connection);
-            }
-        }
-    } catch (error) {
-        logger.error(`Erro ao executar consulta: ${error.message}`);
-        throw error;
-    }
-}
-
 // Adicione esta nova função para restaurar acentos
 function restoreAccents(text) {
     // Dicionário reverso para restaurar os acentos nos resultados
@@ -228,6 +158,176 @@ function sanitizeQueryCompletely(query) {
     logger.info(`Query completamente sanitizada: ${sanitized}`);
 
     return sanitized;
+}
+
+// Adicione esta função ao database.js
+function extractSelectFields(query) {
+    try {
+        // Normalizar a query (remover quebras de linha, múltiplos espaços)
+        const normalizedQuery = query.replace(/\s+/g, ' ').trim();
+
+        // Extrair a parte SELECT da query (até o FROM)
+        const selectPart = normalizedQuery.match(/select\s+(.*?)\s+from/i)?.[1];
+        if (!selectPart) {
+            logger.warn('Não foi possível extrair a parte SELECT da query');
+            return [];
+        }
+
+        // Array para armazenar os nomes das colunas com seus aliases
+        const columns = [];
+
+        // Processa cada parte da cláusula SELECT
+        let currentPos = 0;
+        let inFunction = 0;
+        let start = 0;
+        let insideQuotes = false;
+
+        for (let i = 0; i < selectPart.length; i++) {
+            const char = selectPart[i];
+
+            // Trata strings entre aspas como um bloco
+            if (char === "'" && selectPart[i - 1] !== '\\') {
+                insideQuotes = !insideQuotes;
+            }
+
+            // Não processa separadores dentro de funções ou strings
+            if (insideQuotes) continue;
+
+            // Controla parênteses de funções
+            if (char === '(') inFunction++;
+            else if (char === ')') inFunction--;
+
+            // Identifica separadores de colunas (vírgulas fora de funções)
+            if (char === ',' && inFunction === 0) {
+                columns.push(selectPart.substring(start, i).trim());
+                start = i + 1;
+            }
+        }
+
+        // Adiciona a última coluna
+        columns.push(selectPart.substring(start).trim());
+
+        // Extrai os nomes/aliases finais
+        return columns.map(col => {
+            // Procura por alias explicito (as nome)
+            const aliasMatch = col.match(/\s+as\s+(\w+)$/i);
+            if (aliasMatch) {
+                return aliasMatch[1].toLowerCase();
+            }
+
+            // Se não tem alias, usa o nome da coluna
+            // Primeiro verifica caso de função (como count(*))
+            if (col.includes('(')) {
+                // Extrai o último token após o último espaço como possível nome
+                const lastToken = col.trim().split(/\s+/).pop();
+                return lastToken.toLowerCase();
+            }
+
+            // Para colunas simples, pega o nome após o último ponto
+            const simpleName = col.includes('.') ?
+                col.split('.').pop().toLowerCase() :
+                col.toLowerCase();
+
+            return simpleName;
+        });
+    } catch (error) {
+        logger.error(`Erro ao extrair campos da query: ${error.message}`);
+        return [];
+    }
+}
+
+// Modifique a função executeQuery para usar os campos extraídos
+async function executeQuery(query) {
+    try {
+        let connection = null;
+        try {
+            // Extrair campos da query original
+            const expectedFields = extractSelectFields(query);
+            logger.info(`Campos esperados da query: ${expectedFields.join(', ')}`);
+
+            connection = await getConnection();
+            const sanitizedQuery = sanitizeQueryCompletely(query);
+            logger.info(`Executando query sanitizada: ${sanitizedQuery}`);
+
+            const queryAsync = promisify(connection.query).bind(connection);
+            const result = await queryAsync(sanitizedQuery);
+
+            // Verificar quais campos vieram no resultado
+            if (result && result.length > 0) {
+                const returnedFields = Object.keys(result[0]).map(f => f.toLowerCase());
+                logger.info(`Campos retornados: ${returnedFields.join(', ')}`);
+
+                // Identificar campos ausentes
+                const missingFields = expectedFields.filter(f =>
+                    !returnedFields.includes(f.toLowerCase())
+                );
+
+                if (missingFields.length > 0) {
+                    logger.warn(`Campos ausentes: ${missingFields.join(', ')}`);
+                }
+            }
+
+            // Resto do seu código para processamento dos resultados...
+            const formattedResult = result.map(row => {
+                const newRow = {};
+
+                // Primeiro adicionar campos que vieram no resultado
+                for (const key in row) {
+                    const lowerKey = key.toLowerCase();
+                    let value = row[key];
+
+                    // Seu código atual de processamento
+                    if (value === null) {
+                        if (typeof value === 'number') {
+                            value = 0;
+                        } else {
+                            value = '';
+                        }
+                    }
+
+                    // Formatar datas no estilo da API legada (YYYY-MM-DD)
+                    if (value instanceof Date) {
+                        value = value.toISOString().split('T')[0];
+                    }
+
+                    // Remover espaços extras e restaurar acentos
+                    if (typeof value === 'string') {
+                        value = value.trim();
+                        value = restoreAccents(value);
+                    }
+
+                    newRow[lowerKey] = value;
+                }
+
+                // Adicionar campos esperados que estão ausentes
+                for (const field of expectedFields) {
+                    const fieldLower = field.toLowerCase();
+                    if (!(fieldLower in newRow)) {
+                        // Inferir tipo baseado no nome do campo
+                        const isNumeric = fieldLower.includes('id') ||
+                            fieldLower.includes('quantidade') ||
+                            fieldLower === 'dias' ||
+                            fieldLower === 'pedido' ||
+                            fieldLower.includes('preco');
+
+                        newRow[fieldLower] = isNumeric ? 0 : '';
+                        logger.info(`Adicionado campo ausente: ${fieldLower}`);
+                    }
+                }
+
+                return newRow;
+            });
+
+            return formattedResult;
+        } finally {
+            if (connection) {
+                await releaseConnection(connection);
+            }
+        }
+    } catch (error) {
+        logger.error(`Erro ao executar consulta: ${error.message}`);
+        throw error;
+    }
 }
 
 // Executar comando SQL (sem retorno de dados)
