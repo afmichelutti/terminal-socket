@@ -27,7 +27,8 @@ async function initialize() {
             password: process.env.FB_PASSWORD || config.read('Database', 'password') || 'masterkey',
             port: parseInt(process.env.FB_PORT || config.read('Database', 'port') || '3050', 10),
             lowercase_keys: true,
-            charset: 'WIN1252'
+            charset: 'WIN1252',
+            blobAsText: true
         };
 
         // Teste de conexão direta
