@@ -27,7 +27,7 @@ async function initialize() {
             password: process.env.FB_PASSWORD || config.read('Database', 'password') || 'masterkey',
             port: parseInt(process.env.FB_PORT || config.read('Database', 'port') || '3050', 10),
             lowercase_keys: true,
-            charset: 'WIN1252',
+            charset: 'ISO8859_1',
             blobAsText: true
         };
 
@@ -237,14 +237,88 @@ function extractSelectFields(query) {
     }
 }
 
-// Modifique a função executeQuery para usar os campos extraídos
+// Adicione esta função para inferir tipos a partir dos valores e estrutura
+function inferFieldTypes(query, result) {
+    const typeMap = new Map();
+
+    // 1. Primeiro, inferir tipos a partir da estrutura da query
+    const queryLower = query.toLowerCase();
+
+    // Identificar campos numéricos na query
+    if (result && result.length > 0) {
+        // Pegar todos os campos do primeiro resultado
+        const firstRow = result[0];
+        for (const key in firstRow) {
+            const keyLower = key.toLowerCase();
+
+            // Verificar se é parte de uma expressão matemática
+            const mathPattern = new RegExp(`[(\\s]${keyLower}\\s*[+\\-*/]|[+\\-*/]\\s*${keyLower}[\\s)]`, 'i');
+            if (queryLower.match(mathPattern)) {
+                typeMap.set(keyLower, 'number');
+                continue;
+            }
+
+            // Verificar se é parte de uma função de agregação
+            const aggPattern = new RegExp(`(sum|count|avg|min|max)\\s*\\(\\s*${keyLower}\\s*\\)`, 'i');
+            if (queryLower.match(aggPattern)) {
+                typeMap.set(keyLower, 'number');
+                continue;
+            }
+
+            // Verificar sufixos e prefixos comuns para campos numéricos
+            const numericSuffixes = ['_id', '_num', '_qtd', '_count', '_total', '_valor'];
+            const isLikelyNumeric = numericSuffixes.some(suffix => keyLower.endsWith(suffix)) ||
+                ['id_', 'num_'].some(prefix => keyLower.startsWith(prefix));
+
+            if (isLikelyNumeric) {
+                typeMap.set(keyLower, 'number');
+                continue;
+            }
+        }
+    }
+
+    // 2. Inferir tipos a partir dos dados
+    if (result && result.length > 0) {
+        // Usar todos os registros para inferência mais precisa
+        for (const row of result) {
+            for (const key in row) {
+                const keyLower = key.toLowerCase();
+                const value = row[key];
+
+                // Se já determinamos o tipo deste campo, não precisamos verificar novamente
+                if (typeMap.has(keyLower)) {
+                    continue;
+                }
+
+                // Se o valor é um número, marcar como tipo número
+                if (typeof value === 'number') {
+                    typeMap.set(keyLower, 'number');
+                }
+
+                // Se parece um número armazenado como string
+                if (typeof value === 'string' && !isNaN(value) && value.trim() !== '') {
+                    try {
+                        // Verifica se pode ser convertido para número
+                        parseFloat(value);
+                        typeMap.set(keyLower, 'number');
+                    } catch (e) {
+                        // Ignorar erro
+                    }
+                }
+            }
+        }
+    }
+
+    return typeMap;
+}
+
+// Refatore a função executeQuery para usar a inferência de tipos
 async function executeQuery(query) {
     try {
         let connection = null;
         try {
             // Extrair campos da query original
             const expectedFields = extractSelectFields(query);
-            logger.info(`Campos esperados da query: ${expectedFields.join(', ')}`);
 
             connection = await getConnection();
             const sanitizedQuery = sanitizeQueryCompletely(query);
@@ -253,68 +327,69 @@ async function executeQuery(query) {
             const queryAsync = promisify(connection.query).bind(connection);
             const result = await queryAsync(sanitizedQuery);
 
-            // Verificar quais campos vieram no resultado
+            // Verificar quais campos vieram e inferir tipos
             if (result && result.length > 0) {
                 const returnedFields = Object.keys(result[0]).map(f => f.toLowerCase());
                 logger.info(`Campos retornados: ${returnedFields.join(', ')}`);
-
-                // Identificar campos ausentes
-                const missingFields = expectedFields.filter(f =>
-                    !returnedFields.includes(f.toLowerCase())
-                );
-
-                if (missingFields.length > 0) {
-                    logger.warn(`Campos ausentes: ${missingFields.join(', ')}`);
-                }
             }
 
-            // Resto do seu código para processamento dos resultados...
+            // Inferir tipos para todos os campos
+            const typeMap = inferFieldTypes(query, result);
+
+            // Log dos tipos inferidos para debug
+            typeMap.forEach((type, field) => {
+                logger.info(`Tipo inferido para ${field}: ${type}`);
+            });
+
+            // Processar os resultados
             const formattedResult = result.map(row => {
                 const newRow = {};
 
-                // Primeiro adicionar campos que vieram no resultado
                 for (const key in row) {
                     const lowerKey = key.toLowerCase();
                     let value = row[key];
 
-                    // Seu código atual de processamento
+                    // Tratar valores nulos baseado no tipo inferido
                     if (value === null) {
-                        if (typeof value === 'number') {
+                        const inferredType = typeMap.get(lowerKey);
+                        value = inferredType === 'number' ? 0 : '';
+                    }
+
+                    // Converter strings que deveriam ser números 
+                    if (typeMap.get(lowerKey) === 'number' && typeof value === 'string') {
+                        if (value.trim() === '') {
                             value = 0;
                         } else {
-                            value = '';
+                            const numValue = parseFloat(value);
+                            if (!isNaN(numValue)) {
+                                value = numValue;
+                            }
                         }
                     }
 
-                    // Formatar datas no estilo da API legada (YYYY-MM-DD)
+                    // Formatação de datas
                     if (value instanceof Date) {
                         value = value.toISOString().split('T')[0];
                     }
 
-                    // Remover espaços extras e restaurar acentos
+                    // Restaurar acentos em strings, mas manter espaços extras
+                    // para compatibilidade com API legada
                     if (typeof value === 'string') {
-                        value = value.trim();
+                        // Não aplicar trim() para preservar espaços
                         value = restoreAccents(value);
                     }
 
                     newRow[lowerKey] = value;
                 }
 
-                // Adicionar campos esperados que estão ausentes
-                for (const field of expectedFields) {
+                // Adicionar campos ausentes
+                expectedFields.forEach(field => {
                     const fieldLower = field.toLowerCase();
                     if (!(fieldLower in newRow)) {
-                        // Inferir tipo baseado no nome do campo
-                        const isNumeric = fieldLower.includes('id') ||
-                            fieldLower.includes('quantidade') ||
-                            fieldLower === 'dias' ||
-                            fieldLower === 'pedido' ||
-                            fieldLower.includes('preco');
-
-                        newRow[fieldLower] = isNumeric ? 0 : '';
-                        logger.info(`Adicionado campo ausente: ${fieldLower}`);
+                        const inferredType = typeMap.get(fieldLower);
+                        newRow[fieldLower] = inferredType === 'number' ? 0 : '';
                     }
-                }
+                });
 
                 return newRow;
             });
