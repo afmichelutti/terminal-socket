@@ -1,4 +1,3 @@
-// Conexão e operações com banco de dados Firebird
 const Firebird = require('node-firebird'); // Alterado para node-firebird
 const { promisify } = require('util');
 const logger = require('../utils/logger');
@@ -76,21 +75,49 @@ async function releaseConnection(connection) {
     }
 }
 
-// Temporariamente desabilita a sanitização para teste
-function restoreAccents(text) {
-    // Retorna o texto original sem alterações
+// Função para tentar decodificar usando Buffer
+function decodeWin1252(text) {
+    if (typeof text !== 'string') {
+        return text;
+    }
+    try {
+        // Tenta criar um buffer assumindo que a string recebida são bytes WIN1252/latin1
+        // 'binary' é um alias para latin1 no Node Buffer
+        const buffer = Buffer.from(text, 'binary');
+        // Decodifica o buffer como WIN1252 (usando latin1 como aproximação comum no Node)
+        const decoded = buffer.toString('latin1');
+
+        // Verifica se a decodificação produziu caracteres válidos (evita '')
+        // e se realmente mudou algo (indicando que a decodificação foi necessária)
+        if (!decoded.includes('') && decoded !== text) {
+            // Correções adicionais específicas se necessário após decodificação
+            if (decoded === 'FACÇO') return 'FACÇÃO'; // Correção pós-decodificação
+            if (decoded === 'Servico') return 'Serviço'; // Correção pós-decodificação
+            return decoded;
+        }
+        // Se não mudou ou gerou '', retorna o texto original ou faz correções manuais
+        if (text === 'FACÇO') return 'FACÇÃO';
+        if (text === 'Servico') return 'Serviço';
+
+    } catch (e) {
+        logger.warn(`Erro ao decodificar texto: ${e.message}`);
+        // Fallback para correções manuais
+        if (text === 'FACÇO') return 'FACÇÃO';
+        if (text === 'Servico') return 'Serviço';
+    }
+    // Se tudo falhar, retorna o texto como veio (ou com correções manuais)
     return text;
 }
 
-// Adicione esta função para garantir codificação correta em todo o resultado
+// Reativar a função sanitizeResultEncoding usando a nova decodificação
 function sanitizeResultEncoding(result) {
     if (Array.isArray(result)) {
         return result.map(row => {
             const newRow = {};
             for (const key in row) {
                 if (typeof row[key] === 'string') {
-                    // Para cada string, tenta decodificar e restaurar acentos
-                    newRow[key] = restoreAccents(row[key]);
+                    // Aplica a decodificação explícita
+                    newRow[key] = decodeWin1252(row[key]);
                 } else {
                     newRow[key] = row[key];
                 }
@@ -101,60 +128,10 @@ function sanitizeResultEncoding(result) {
     return result;
 }
 
-// Nova função para sanitização completa
-function sanitizeQueryCompletely(query) {
-    // Log da query original para referência
-    logger.info(`Query original: ${query}`);
-
-    // 1. Converter datas de MM/DD/YYYY para YYYY-MM-DD
-    const dateRegex = /'(\d{1,2})\/(\d{1,2})\/(\d{4})'/g;
-    let sanitized = query.replace(dateRegex, (match, month, day, year) => {
-        const formattedMonth = month.padStart(2, '0');
-        const formattedDay = day.padStart(2, '0');
-        return `'${year}-${formattedMonth}-${formattedDay}'`;
-    });
-
-    // 3. Substituir COALESCE e preservar aliases
-    sanitized = sanitized.replace(
-        /coalesce\s*\(\s*([^,]+)\s*,\s*'[^']*'\s*\)(\s+as\s+\w+)/gi,
-        "$1$2"
-    );
-
-    sanitized = sanitized.replace(
-        /coalesce\s*\(\s*([^,]+)\s*,\s*0\s*\)(\s+as\s+\w+)/gi,
-        "$1$2"
-    );
-
-    // 4. Substituir CASE WHEN e preservar aliases
-    sanitized = sanitized.replace(
-        /case\s+when\s+([^\s]+)\s+is\s+null\s+then\s+(?:'[^']*'|null|0)\s+else\s+([^\s]+)\s+end(\s+as\s+\w+)/gi,
-        "$2$3"
-    );
-
-    // 6. Remover todos os acentos restantes usando um mapa de caracteres
-    const accentMap = {
-        'á': 'a', 'à': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a',
-        'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
-        'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
-        'ó': 'o', 'ò': 'o', 'ô': 'o', 'õ': 'o', 'ö': 'o',
-        'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
-        'ç': 'c',
-        'Á': 'A', 'À': 'A', 'Â': 'A', 'Ã': 'A', 'Ä': 'A',
-        'É': 'E', 'È': 'E', 'Ê': 'E', 'Ë': 'E',
-        'Í': 'I', 'Ì': 'I', 'Î': 'I', 'Ï': 'I',
-        'Ó': 'O', 'Ò': 'O', 'Ô': 'O', 'Õ': 'O', 'Ö': 'O',
-        'Ú': 'U', 'Ù': 'U', 'Û': 'U', 'Ü': 'U',
-        'Ç': 'C'
-    };
-
-    for (const accent in accentMap) {
-        sanitized = sanitized.replace(new RegExp(accent, 'g'), accentMap[accent]);
-    }
-
-    // Log da query sanitizada para debug
-    logger.info(`Query completamente sanitizada: ${sanitized}`);
-
-    return sanitized;
+// Adicione esta função para garantir codificação correta em todo o resultado
+function restoreAccents(text) {
+    // Retorna o texto original sem alterações
+    return text;
 }
 
 // Adicione esta função ao database.js
@@ -395,7 +372,7 @@ async function executeQuery(query) {
                     // para compatibilidade com API legada
                     if (typeof value === 'string') {
                         // Não aplicar trim() para preservar espaços
-                        value = restoreAccents(value);
+                        value = value;
                     }
 
                     newRow[lowerKey] = value;
