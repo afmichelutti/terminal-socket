@@ -303,6 +303,43 @@ function inferFieldTypes(query, result) {
     return typeMap;
 }
 
+// Adicione esta função antes de executeQuery
+function sanitizeQueryCompletely(query) {
+    let sanitized = query;
+
+    // 1. Substituir formatos de data DD/MM/YYYY por YYYY-MM-DD
+    // Usa regex para encontrar datas no formato DD/MM/YYYY dentro de aspas simples
+    sanitized = sanitized.replace(/'(\d{2})\/(\d{2})\/(\d{4})'/g, (match, day, month, year) => {
+        // Reorganiza para YYYY-MM-DD
+        return `'${year}-${month}-${day}'`;
+    });
+
+    // 2. Remover COALESCE(..., 0) ou COALESCE(..., '') para simplificar
+    // Remove COALESCE(campo, 0) -> campo
+    sanitized = sanitized.replace(/coalesce\(([^,]+),\s*0\)/gi, '$1');
+    // Remove COALESCE(campo, '') -> campo
+    sanitized = sanitized.replace(/coalesce\(([^,]+),\s*''\)/gi, '$1');
+
+    // 3. Simplificar CASE para acentos (se necessário, mas pode ser tratado na decodificação)
+    // Exemplo: case tipo_ordem when 'C' then 'Corte' -> case tipo_ordem when 'C' then 'Corte'
+    // Por enquanto, não faremos substituições aqui, focando na decodificação
+
+    // 4. Remover comentários SQL (se houver)
+    sanitized = sanitized.replace(/--.*$/gm, ''); // Remove comentários de linha
+    sanitized = sanitized.replace(/\/\*[\s\S]*?\*\//g, ''); // Remove comentários de bloco
+
+    // 5. Normalizar espaços
+    sanitized = sanitized.replace(/\s+/g, ' ').trim();
+
+    // Log da query antes e depois da sanitização completa
+    if (query !== sanitized) {
+        logger.info(`Query original: ${query}`);
+        logger.info(`Query completamente sanitizada: ${sanitized}`);
+    }
+
+    return sanitized;
+}
+
 // Modifique a função executeQuery para usar sanitizeResultEncoding
 async function executeQuery(query) {
     try {
