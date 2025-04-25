@@ -241,15 +241,65 @@ function extractSelectFields(query) {
 function inferFieldTypes(query, result) {
     const typeMap = new Map();
 
-    // 1. Primeiro, inferir tipos a partir da estrutura da query
-    const queryLower = query.toLowerCase();
+    // Lista de campos que devem ser forçados como string, independente da inferência
+    const forceStringFields = ['id_produto'];
 
-    // Identificar campos numéricos na query
+    // 2. Primeiro inferir tipos a partir dos dados reais (prioridade máxima)
     if (result && result.length > 0) {
-        // Pegar todos os campos do primeiro resultado
+        for (const row of result) {
+            for (const key in row) {
+                const keyLower = key.toLowerCase();
+                const value = row[key];
+
+                // Se é um dos campos que devemos forçar como string, definir e pular
+                if (forceStringFields.includes(keyLower)) {
+                    typeMap.set(keyLower, 'string');
+                    continue;
+                }
+
+                // Se já determinamos o tipo, não precisamos verificar novamente
+                if (typeMap.has(keyLower)) {
+                    continue;
+                }
+
+                // Determinar tipo baseado no valor real dos dados
+                if (typeof value === 'number') {
+                    typeMap.set(keyLower, 'number');
+                } else if (value instanceof Date) {
+                    typeMap.set(keyLower, 'date');
+                } else if (typeof value === 'string') {
+                    // Verificar se a string parece um número
+                    if (!isNaN(value) && value.trim() !== '') {
+                        const numVal = Number(value);
+                        // Se parece um ID ou código (começa com zeros), tratar como string
+                        if (value.startsWith('0') && value.length > 1) {
+                            typeMap.set(keyLower, 'string');
+                        } else {
+                            typeMap.set(keyLower, 'number');
+                        }
+                    } else {
+                        typeMap.set(keyLower, 'string');
+                    }
+                } else {
+                    typeMap.set(keyLower, 'string'); // default para outros tipos
+                }
+            }
+        }
+    }
+
+    // 2. Aplicar heurísticas baseadas nos nomes de campos apenas para campos não determinados
+    if (result && result.length > 0) {
         const firstRow = result[0];
         for (const key in firstRow) {
             const keyLower = key.toLowerCase();
+
+            // Pular campos já determinados ou na lista de forçados
+            if (typeMap.has(keyLower) || forceStringFields.includes(keyLower)) {
+                continue;
+            }
+
+            // Heurísticas baseadas na estrutura da query
+            const queryLower = query.toLowerCase();
 
             // Verificar se é parte de uma expressão matemática
             const mathPattern = new RegExp(`[(\\s]${keyLower}\\s*[+\\-*/]|[+\\-*/]\\s*${keyLower}[\\s)]`, 'i');
@@ -266,45 +316,13 @@ function inferFieldTypes(query, result) {
             }
 
             // Verificar sufixos e prefixos comuns para campos numéricos
-            const numericSuffixes = ['_id', '_num', '_qtd', '_count', '_total', '_valor'];
+            // Remova '_id' da lista se id_produto deve sempre ser string
+            const numericSuffixes = ['_num', '_qtd', '_count', '_total', '_valor'];
             const isLikelyNumeric = numericSuffixes.some(suffix => keyLower.endsWith(suffix)) ||
-                ['id_', 'num_'].some(prefix => keyLower.startsWith(prefix));
+                ['num_'].some(prefix => keyLower.startsWith(prefix));
 
             if (isLikelyNumeric) {
                 typeMap.set(keyLower, 'number');
-                continue;
-            }
-        }
-    }
-
-    // 2. Inferir tipos a partir dos dados
-    if (result && result.length > 0) {
-        // Usar todos os registros para inferência mais precisa
-        for (const row of result) {
-            for (const key in row) {
-                const keyLower = key.toLowerCase();
-                const value = row[key];
-
-                // Se já determinamos o tipo deste campo, não precisamos verificar novamente
-                if (typeMap.has(keyLower)) {
-                    continue;
-                }
-
-                // Se o valor é um número, marcar como tipo número
-                if (typeof value === 'number') {
-                    typeMap.set(keyLower, 'number');
-                }
-
-                // Se parece um número armazenado como string
-                if (typeof value === 'string' && !isNaN(value) && value.trim() !== '') {
-                    try {
-                        // Verifica se pode ser convertido para número
-                        parseFloat(value);
-                        typeMap.set(keyLower, 'number');
-                    } catch (e) {
-                        // Ignorar erro
-                    }
-                }
             }
         }
     }
