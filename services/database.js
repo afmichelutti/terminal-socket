@@ -27,7 +27,7 @@ async function initialize() {
             password: process.env.FB_PASSWORD || config.read('Database', 'password') || 'masterkey',
             port: parseInt(process.env.FB_PORT || config.read('Database', 'port') || '3050', 10),
             lowercase_keys: true,
-            charset: 'WIN1252',  // Alterar para WIN1252 em vez de ISO8859_1
+            charset: 'NONE',
             blobAsText: true
         };
 
@@ -76,59 +76,10 @@ async function releaseConnection(connection) {
     }
 }
 
-// Melhorar a função restoreAccents para lidar com mais caracteres especiais
+// Temporariamente desabilita a sanitização para teste
 function restoreAccents(text) {
-    if (!text || typeof text !== 'string') return text;
-
-    // Tabela de conversão mais completa
-    const accentMap = {
-        'a': 'áàâãä', 'e': 'éèêë', 'i': 'íìîï', 'o': 'óòôõö', 'u': 'úùûü', 'c': 'ç',
-        'A': 'ÁÀÂÃÄ', 'E': 'ÉÈÊË', 'I': 'ÍÌÎÏ', 'O': 'ÓÒÔÕÖ', 'U': 'ÚÙÛÜ', 'C': 'Ç'
-    };
-
-    // Primeiro, tente decodificar caracteres diretamente usando o Buffer
-    try {
-        // Tenta interpretar como Latin1 (ISO-8859-1)
-        const buf = Buffer.from(text, 'binary');
-        const decoded = buf.toString('latin1');
-
-        // Se a decodificação funcionou e alterou o texto, a retorne
-        if (decoded !== text && !decoded.includes('�')) {
-            return decoded;
-        }
-    } catch (e) {
-        // Continua com o método alternativo se a decodificação falhar
-        logger.warn(`Erro ao decodificar '${text}': ${e.message}`);
-    }
-
-    // Método alternativo: substituição direta de palavras comuns
-    const valueMap = {
-        'Producao': 'Produção',
-        'Servico': 'Serviço',
-        'Codigo': 'Código',
-        'Descricao': 'Descrição',
-        'Observacao': 'Observação',
-        'Numero': 'Número',
-        'nao': 'não',
-        'OBSERVACOES': 'OBSERVAÇÕES',
-        'OBSERVACOES DA ESCOLA': 'OBSERVAÇÕES DA ESCOLA',
-        'CALCA': 'CALÇA'
-    };
-
-    // Verificar se o texto exato existe no mapa
-    if (valueMap[text]) {
-        return valueMap[text];
-    }
-
-    // Se não for um texto exato, procurar por substituições dentro do texto
-    let restoredText = text;
-    for (const [plain, accented] of Object.entries(valueMap)) {
-        // Usar regex para substituir apenas palavras completas
-        const regex = new RegExp(`\\b${plain}\\b`, 'g');
-        restoredText = restoredText.replace(regex, accented);
-    }
-
-    return restoredText;
+    // Retorna o texto original sem alterações
+    return text;
 }
 
 // Adicione esta função para garantir codificação correta em todo o resultado
