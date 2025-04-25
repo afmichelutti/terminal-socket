@@ -303,21 +303,38 @@ function inferFieldTypes(query, result) {
     return typeMap;
 }
 
-// Adicione esta função antes de executeQuery
+// Modifique a função sanitizeQueryCompletely para corrigir a conversão de datas
 function sanitizeQueryCompletely(query) {
     let sanitized = query;
 
-    // 1. Substituir formatos de data DD/MM/YYYY por YYYY-MM-DD
-    // Usa regex para encontrar datas no formato DD/MM/YYYY dentro de aspas simples
+    // 1. CORRIGIR: Substituir formatos de data DD/MM/YYYY por YYYY-MM-DD
     sanitized = sanitized.replace(/'(\d{2})\/(\d{2})\/(\d{4})'/g, (match, day, month, year) => {
-        // Reorganiza para YYYY-MM-DD
-        return `'${year}-${month}-${day}'`;
+        // Verificar se os valores são dias/meses válidos
+        const dayNum = parseInt(day);
+        const monthNum = parseInt(month);
+
+        // Se o primeiro valor é maior que 12, assume formato DD/MM/YYYY
+        if (dayNum > 12) {
+            // Formato DD/MM/YYYY - primeiro é dia, segundo é mês
+            return `'${year}-${month}-${day}'`;
+        }
+        // Se o segundo valor é maior que 12, assume formato MM/DD/YYYY
+        else if (monthNum > 12) {
+            // Formato MM/DD/YYYY - primeiro é mês, segundo é dia
+            return `'${year}-${day}-${month}'`;
+        }
+        // Caso ambíguo (exemplo: 10/11/1899), assume DD/MM/YYYY por ser padrão brasileiro
+        else {
+            return `'${year}-${month}-${day}'`;
+        }
     });
 
+    // Substituição específica para a data problemática 12/30/1899
+    sanitized = sanitized.replace(/'12\/30\/1899'/g, "'1899-12-30'");
+    sanitized = sanitized.replace(/'1899-30-12'/g, "'1899-12-30'");
+
     // 2. Remover COALESCE(..., 0) ou COALESCE(..., '') para simplificar
-    // Remove COALESCE(campo, 0) -> campo
     sanitized = sanitized.replace(/coalesce\(([^,]+),\s*0\)/gi, '$1');
-    // Remove COALESCE(campo, '') -> campo
     sanitized = sanitized.replace(/coalesce\(([^,]+),\s*''\)/gi, '$1');
 
     // 3. Simplificar CASE para acentos (se necessário, mas pode ser tratado na decodificação)
