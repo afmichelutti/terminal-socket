@@ -354,6 +354,11 @@ async function executeQuery(query) {
             // Inferir tipos para todos os campos
             const typeMap = inferFieldTypes(query, result);
 
+            // Tratar id_produto explicitamente como string
+            if (typeMap.has('id_produto')) {
+                typeMap.set('id_produto', 'string');
+            }
+
             // Log dos tipos inferidos para debug
             typeMap.forEach((type, field) => {
                 logger.info(`Tipo inferido para ${field}: ${type}`);
