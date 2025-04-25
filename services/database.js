@@ -14,7 +14,7 @@ let dbConfig = {
 
 let dbPool = null;
 
-// Modificar a função initialize para usar conexão direta
+// Modificar a inicialização do banco de dados
 async function initialize() {
     try {
         await config.load();
@@ -27,7 +27,7 @@ async function initialize() {
             password: process.env.FB_PASSWORD || config.read('Database', 'password') || 'masterkey',
             port: parseInt(process.env.FB_PORT || config.read('Database', 'port') || '3050', 10),
             lowercase_keys: true,
-            charset: 'WIN1252',
+            charset: 'WIN1252',  // Alterar para WIN1252 em vez de ISO8859_1
             blobAsText: true
         };
 
@@ -76,9 +76,32 @@ async function releaseConnection(connection) {
     }
 }
 
-// Adicione esta nova função para restaurar acentos
+// Melhorar a função restoreAccents para lidar com mais caracteres especiais
 function restoreAccents(text) {
-    // Dicionário reverso para restaurar os acentos nos resultados
+    if (!text || typeof text !== 'string') return text;
+
+    // Tabela de conversão mais completa
+    const accentMap = {
+        'a': 'áàâãä', 'e': 'éèêë', 'i': 'íìîï', 'o': 'óòôõö', 'u': 'úùûü', 'c': 'ç',
+        'A': 'ÁÀÂÃÄ', 'E': 'ÉÈÊË', 'I': 'ÍÌÎÏ', 'O': 'ÓÒÔÕÖ', 'U': 'ÚÙÛÜ', 'C': 'Ç'
+    };
+
+    // Primeiro, tente decodificar caracteres diretamente usando o Buffer
+    try {
+        // Tenta interpretar como Latin1 (ISO-8859-1)
+        const buf = Buffer.from(text, 'binary');
+        const decoded = buf.toString('latin1');
+
+        // Se a decodificação funcionou e alterou o texto, a retorne
+        if (decoded !== text && !decoded.includes('�')) {
+            return decoded;
+        }
+    } catch (e) {
+        // Continua com o método alternativo se a decodificação falhar
+        logger.warn(`Erro ao decodificar '${text}': ${e.message}`);
+    }
+
+    // Método alternativo: substituição direta de palavras comuns
     const valueMap = {
         'Producao': 'Produção',
         'Servico': 'Serviço',
@@ -86,7 +109,10 @@ function restoreAccents(text) {
         'Descricao': 'Descrição',
         'Observacao': 'Observação',
         'Numero': 'Número',
-        'nao': 'não'
+        'nao': 'não',
+        'OBSERVACOES': 'OBSERVAÇÕES',
+        'OBSERVACOES DA ESCOLA': 'OBSERVAÇÕES DA ESCOLA',
+        'CALCA': 'CALÇA'
     };
 
     // Verificar se o texto exato existe no mapa
@@ -103,6 +129,25 @@ function restoreAccents(text) {
     }
 
     return restoredText;
+}
+
+// Adicione esta função para garantir codificação correta em todo o resultado
+function sanitizeResultEncoding(result) {
+    if (Array.isArray(result)) {
+        return result.map(row => {
+            const newRow = {};
+            for (const key in row) {
+                if (typeof row[key] === 'string') {
+                    // Para cada string, tenta decodificar e restaurar acentos
+                    newRow[key] = restoreAccents(row[key]);
+                } else {
+                    newRow[key] = row[key];
+                }
+            }
+            return newRow;
+        });
+    }
+    return result;
 }
 
 // Nova função para sanitização completa
@@ -330,7 +375,7 @@ function inferFieldTypes(query, result) {
     return typeMap;
 }
 
-// Refatore a função executeQuery para usar a inferência de tipos
+// Modifique a função executeQuery para usar sanitizeResultEncoding
 async function executeQuery(query) {
     try {
         let connection = null;
@@ -417,7 +462,10 @@ async function executeQuery(query) {
                 return newRow;
             });
 
-            return formattedResult;
+            // Garantir codificação correta em todo o resultado
+            const sanitizedResult = sanitizeResultEncoding(formattedResult);
+
+            return sanitizedResult;
         } finally {
             if (connection) {
                 await releaseConnection(connection);
