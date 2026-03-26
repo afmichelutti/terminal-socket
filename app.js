@@ -80,38 +80,28 @@ function setupHealthMonitor() {
         // Se já estiver reconectando, pular esta verificação
         if (isReconnecting) return;
 
-        const inactiveTime = Date.now() - lastActivityTime;
+        // Só reconectar se o WebSocket realmente está desconectado
+        const wsConnected = websocket.isConnected();
 
-        // Após 3 minutos inativo, tentar reconexão
-        if (inactiveTime > 3 * 60 * 1000) {
+        if (!wsConnected) {
             isReconnecting = true;
-            logger.warn(`Aplicação inativa por ${Math.round(inactiveTime / 1000 / 60)} minutos. Possível travamento detectado.`);
+            logger.warn('WebSocket desconectado. Tentando reconexão...');
 
             try {
-                // Tentar reconectar banco e websocket
-                const dbReconnected = await database.reconnect();
                 const wsReconnected = await websocket.reconnect();
 
-                if (dbReconnected && wsReconnected) {
-                    logger.info("Serviços reconectados com sucesso após inatividade");
+                if (wsReconnected) {
+                    logger.info("WebSocket reconectado com sucesso");
                     lastActivityTime = Date.now();
                 } else {
-                    logger.error("Falha na reconexão de pelo menos um serviço. Forçando reinício.");
-                    // Registrar estado antes de reiniciar
-                    logger.error(`Estado do sistema antes do reinício forçado:
-                        - Tempo inativo: ${Math.round(inactiveTime / 1000)} segundos
-                        - DB reconectado: ${dbReconnected}
-                        - WS reconectado: ${wsReconnected}
-                    `);
-
-                    // Aguardar 5 segundos para completar o log
+                    logger.error("Falha na reconexão do WebSocket. Forçando reinício.");
                     setTimeout(() => {
                         process.exit(1);  // PM2 reiniciará automaticamente
                     }, 5000);
                     return;
                 }
             } catch (error) {
-                logger.error(`Erro durante recuperação: ${error.message}. Reinício forçado.`);
+                logger.error(`Erro durante recuperação do WebSocket: ${error.message}. Reinício forçado.`);
                 setTimeout(() => {
                     process.exit(1);  // PM2 reiniciará automaticamente
                 }, 5000);
@@ -121,10 +111,11 @@ function setupHealthMonitor() {
             }
         }
 
-        // A cada 10 minutos, registrar um heartbeat (para saber que o monitor está funcionando)
-        else if (inactiveTime > 10 * 60 * 1000) {
-            logger.info(`Heartbeat: Sistema ativo, ${Math.round(inactiveTime / 1000 / 60)} minutos desde última atividade`);
-            // Não atualizar lastActivityTime para não interferir com monitoramento real
+        // A cada 30 minutos, registrar um heartbeat
+        const inactiveTime = Date.now() - lastActivityTime;
+        if (inactiveTime > 30 * 60 * 1000) {
+            logger.info(`Heartbeat: Sistema ativo, WS conectado: ${wsConnected}, ${Math.round(inactiveTime / 1000 / 60)} minutos desde última query`);
+            lastActivityTime = Date.now(); // Reset para evitar heartbeat repetido
         }
 
     }, 30000); // Verificar a cada 30 segundos
