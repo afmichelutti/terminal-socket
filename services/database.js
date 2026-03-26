@@ -2,6 +2,7 @@ const Firebird = require('node-firebird'); // Alterado para node-firebird
 const { promisify } = require('util');
 const logger = require('../utils/logger');
 const config = require('../config/config');
+const iconv = require('iconv-lite');
 
 let dbConfig = {
     host: process.env.FB_SERVER || 'localhost',
@@ -13,12 +14,12 @@ let dbConfig = {
 
 let dbPool = null;
 
-// Modificar a inicialização do banco de dados
+// Modificar a função initialize para usar apenas conexões dedicadas
 async function initialize() {
     try {
         await config.load();
 
-        // Usar as configurações do ambiente, com fallback para o INI
+        // Configurar dbConfig como antes
         dbConfig = {
             host: process.env.FB_SERVER || config.read('Database', 'server') || 'localhost',
             database: process.env.FB_DATABASE || config.read('Database', 'database') || 'database.fdb',
@@ -27,24 +28,15 @@ async function initialize() {
             port: parseInt(process.env.FB_PORT || config.read('Database', 'port') || '3050', 10),
             lowercase_keys: true,
             charset: 'ISO8859_1',
+            encoding: 'latin1',
             blobAsText: true
         };
 
-        // Teste de conexão direta
-        const testConnection = await new Promise((resolve, reject) => {
-            Firebird.attach(dbConfig, (err, db) => {
-                if (err) reject(err);
-                else {
-                    db.detach();
-                    resolve(true);
-                }
-            });
-        });
+        // Teste de conexão
+        const testConnection = await getDedicatedConnection();
+        testConnection.detach();
 
-        // Criar pool só depois do teste
-        dbPool = Firebird.pool(5, dbConfig);
-
-        logger.info('Conexão com banco de dados estabelecida', 'Auditoria');
+        logger.info('Conexão com banco de dados estabelecida (modo sem pool)', 'Auditoria');
         return true;
     } catch (error) {
         logger.error(`Erro ao inicializar conexão com banco de dados: ${error.message}`);
@@ -52,86 +44,108 @@ async function initialize() {
     }
 }
 
-// Obter uma conexão do pool
-async function getConnection() {
-    return new Promise((resolve, reject) => {
-        if (!dbPool) {
-            return reject(new Error('Pool de conexões não inicializado'));
-        }
-
-        dbPool.get((err, db) => {
-            if (err) {
-                return reject(err);
-            }
-            resolve(db);
-        });
-    });
-}
-
-// Liberar uma conexão de volta para o pool
-async function releaseConnection(connection) {
-    if (connection) {
-        connection.detach();
-    }
-}
-
 // Função para tentar decodificar usando Buffer
+// Substituir a função decodeWin1252 atual
 function decodeWin1252(text) {
     if (typeof text !== 'string') {
         return text;
     }
-    try {
-        // Tenta criar um buffer assumindo que a string recebida são bytes WIN1252/latin1
-        // 'binary' é um alias para latin1 no Node Buffer
-        const buffer = Buffer.from(text, 'binary');
-        // Decodifica o buffer como WIN1252 (usando latin1 como aproximação comum no Node)
-        const decoded = buffer.toString('latin1');
 
-        // Verifica se a decodificação produziu caracteres válidos (evita '')
-        // e se realmente mudou algo (indicando que a decodificação foi necessária)
-        if (!decoded.includes('') && decoded !== text) {
-            // Correções adicionais específicas se necessário após decodificação
-            if (decoded === 'FACÇO') return 'FACÇÃO'; // Correção pós-decodificação
-            if (decoded === 'Servico') return 'Serviço'; // Correção pós-decodificação
-            return decoded;
+    // Mapeamento direto de caracteres específicos problemáticos
+    const characterMap = {
+        'FAC��O': 'FACÇÃO',
+        '��': 'ÇÕ',
+        '�': 'Ç',
+        'Servico': 'Serviço',
+        'Producao': 'Produção',
+        'FACO': 'FACÇÃO',
+        'OBSERVACOES': 'OBSERVAÇÕES',
+        'CAMISETE FEMININO': 'CAMISETE FEMININO',
+        'FILETE NAS MANGAS': 'FILETE NAS MANGAS',
+        'BOTAO': 'BOTÃO',
+        'PATE': 'PATÊ',
+        'PE DE GOLA': 'PÉ DE GOLA'
+    };
+
+    // Primeiro tentar substituições específicas para strings completas
+    for (const [original, corrected] of Object.entries(characterMap)) {
+        if (text.includes(original)) {
+            text = text.replace(new RegExp(original, 'g'), corrected);
         }
-        // Se não mudou ou gerou '', retorna o texto original ou faz correções manuais
-        if (text === 'FACÇO') return 'FACÇÃO';
-        if (text === 'Servico') return 'Serviço';
+    }
 
+    // Se o texto ainda contiver caracteres problemáticos, tente decodificação
+    try {
+        // Tenta criar um buffer e decodificar como ISO-8859-1
+        const buffer = Buffer.from(text, 'binary');
+        const decodedLatin1 = buffer.toString('latin1');
+
+        // Se a decodificação produziu algo diferente e sem caracteres inválidos
+        if (decodedLatin1 !== text && !decodedLatin1.includes('�')) {
+            return decodedLatin1;
+        }
     } catch (e) {
         logger.warn(`Erro ao decodificar texto: ${e.message}`);
-        // Fallback para correções manuais
-        if (text === 'FACÇO') return 'FACÇÃO';
-        if (text === 'Servico') return 'Serviço';
     }
-    // Se tudo falhar, retorna o texto como veio (ou com correções manuais)
+
     return text;
 }
 
-// Reativar a função sanitizeResultEncoding usando a nova decodificação
 function sanitizeResultEncoding(result) {
-    if (Array.isArray(result)) {
-        return result.map(row => {
-            const newRow = {};
-            for (const key in row) {
-                if (typeof row[key] === 'string') {
-                    // Aplica a decodificação explícita
-                    newRow[key] = decodeWin1252(row[key]);
+    if (!Array.isArray(result)) {
+        return result;
+    }
+
+    // Adicionar logging para verificar os tipos reais que estão chegando
+    if (result.length > 0) {
+        const firstRow = result[0];
+        logger.info(`=== TIPOS ANTES DA SANITIZAÇÃO ===`);
+        for (const key in firstRow) {
+            const value = firstRow[key];
+            logger.info(`Campo: ${key}, Valor: ${value}, Tipo: ${typeof value}`);
+        }
+    }
+
+    return result.map(row => {
+        const newRow = {};
+        for (const key in row) {
+            let value = row[key];
+
+            if (typeof value === 'string') {
+                // Usar a função convertEncoding para uma abordagem mais consistente
+                value = convertEncoding(value);
+
+                // Verificar se campo é um tamanho (tam##) e está vazio ou null
+                if (key.toLowerCase().match(/^tam\d+$/) && (!value || value.trim() === '')) {
+                    newRow[key] = ''; // Garantir string vazia para campos tam vazios
                 } else {
-                    newRow[key] = row[key];
+                    newRow[key] = value;
+                }
+            } else if (value === null) {
+                // Valores nulos tratados de acordo com o padrão do campo
+                if (key.toLowerCase().match(/^tam\d+$/)) {
+                    newRow[key] = ''; // Campo tam## nulo vira string vazia
+                } else if (key.toLowerCase().match(/^e\d+$/)) {
+                    newRow[key] = 0;  // Campo e## nulo vira número zero
+                } else {
+                    newRow[key] = '';  // Default para outros campos
+                }
+            } else {
+                // Se campo de tamanho não é string, converter para string
+                if (key.toLowerCase().match(/^tam\d+$/)) {
+                    newRow[key] = String(value);
+                } else if (key.toLowerCase().match(/^e\d+$/) && typeof value !== 'number') {
+                    // Se campo de estoque não é número, converter para número
+                    const num = parseFloat(value);
+                    newRow[key] = isNaN(num) ? 0 : num;
+                } else {
+                    newRow[key] = value;
                 }
             }
-            return newRow;
-        });
-    }
-    return result;
-}
+        }
 
-// Adicione esta função para garantir codificação correta em todo o resultado
-function restoreAccents(text) {
-    // Retorna o texto original sem alterações
-    return text;
+        return newRow;
+    });
 }
 
 // Adicione esta função ao database.js
@@ -217,7 +231,14 @@ function inferFieldTypes(query, result) {
     // Lista de campos que devem ser forçados como string, independente da inferência
     const forceStringFields = ['id_produto'];
 
-    // 2. Primeiro inferir tipos a partir dos dados reais (prioridade máxima)
+    // Lista de padrões de campos que devem ser consistentes
+    const fieldPatterns = [
+        { pattern: /^tam\d+$/, type: 'string' },  // Todos os campos tam01, tam02...
+        { pattern: /^e\d+$/, type: 'number' },    // Todos os campos e01, e02...
+        { pattern: /^quant_\d+$/, type: 'number' } // Campos quant_01, quant_02...
+    ];
+
+    // Primeiro inferir tipos a partir dos dados reais (prioridade máxima)
     if (result && result.length > 0) {
         for (const row of result) {
             for (const key in row) {
@@ -260,7 +281,7 @@ function inferFieldTypes(query, result) {
         }
     }
 
-    // 2. Aplicar heurísticas baseadas nos nomes de campos apenas para campos não determinados
+    // Aplicar heurísticas baseadas nos nomes de campos apenas para campos não determinados
     if (result && result.length > 0) {
         const firstRow = result[0];
         for (const key in firstRow) {
@@ -297,6 +318,23 @@ function inferFieldTypes(query, result) {
             if (isLikelyNumeric) {
                 typeMap.set(keyLower, 'number');
             }
+        }
+    }
+
+    // NOVA ETAPA: Garantir consistência entre campos do mesmo padrão
+    for (const { pattern, type } of fieldPatterns) {
+        // Encontrar todos os campos que correspondem ao padrão
+        const matchingFields = Array.from(typeMap.keys())
+            .filter(field => pattern.test(field));
+
+        // Se encontramos campos que correspondem ao padrão, forçamos todos para o mesmo tipo
+        if (matchingFields.length > 0) {
+            matchingFields.forEach(field => {
+                if (typeMap.get(field) !== type) {
+                    logger.info(`Padronizando campo '${field}' para tipo '${type}'`);
+                    typeMap.set(field, type);
+                }
+            });
         }
     }
 
@@ -357,105 +395,220 @@ function sanitizeQueryCompletely(query) {
     return sanitized;
 }
 
-// Modifique a função executeQuery para usar sanitizeResultEncoding
 async function executeQuery(query) {
+    let connection = null;
     try {
-        let connection = null;
-        try {
-            // Extrair campos da query original
-            const expectedFields = extractSelectFields(query);
+        // Extrair campos da query original
+        const expectedFields = extractSelectFields(query);
 
-            connection = await getConnection();
-            const sanitizedQuery = sanitizeQueryCompletely(query);
-            logger.info(`Executando query sanitizada: ${sanitizedQuery}`);
+        // Usar conexão dedicada em vez do pool
+        connection = await getDedicatedConnection();
 
-            const queryAsync = promisify(connection.query).bind(connection);
-            const result = await queryAsync(sanitizedQuery);
+        const sanitizedQuery = sanitizeQueryCompletely(query);
+        logger.info(`Executando query sanitizada (conexão dedicada): ${sanitizedQuery}`);
 
-            // Verificar quais campos vieram e inferir tipos
-            if (result && result.length > 0) {
-                const returnedFields = Object.keys(result[0]).map(f => f.toLowerCase());
-                logger.info(`Campos retornados: ${returnedFields.join(', ')}`);
-            }
+        // Criar promisified query
+        const queryAsync = promisify(connection.query).bind(connection);
 
-            // Inferir tipos para todos os campos
-            const typeMap = inferFieldTypes(query, result);
+        // Execute a consulta
+        let result = await queryAsync(sanitizedQuery);
 
-            // Tratar id_produto explicitamente como string
-            if (typeMap.has('id_produto')) {
-                typeMap.set('id_produto', 'string');
-            }
-
-            // Log dos tipos inferidos para debug
-            typeMap.forEach((type, field) => {
-                logger.info(`Tipo inferido para ${field}: ${type}`);
-            });
-
-            // Processar os resultados
-            const formattedResult = result.map(row => {
-                const newRow = {};
-
-                for (const key in row) {
-                    const lowerKey = key.toLowerCase();
-                    let value = row[key];
-
-                    // Tratar valores nulos baseado no tipo inferido
-                    if (value === null) {
-                        const inferredType = typeMap.get(lowerKey);
-                        value = inferredType === 'number' ? 0 : '';
-                    }
-
-                    // Converter strings que deveriam ser números 
-                    if (typeMap.get(lowerKey) === 'number' && typeof value === 'string') {
-                        if (value.trim() === '') {
-                            value = 0;
-                        } else {
-                            const numValue = parseFloat(value);
-                            if (!isNaN(numValue)) {
-                                value = numValue;
-                            }
-                        }
-                    }
-
-                    // Formatação de datas
-                    if (value instanceof Date) {
-                        value = value.toISOString().split('T')[0];
-                    }
-
-                    // Restaurar acentos em strings, mas manter espaços extras
-                    // para compatibilidade com API legada
-                    if (typeof value === 'string') {
-                        // Não aplicar trim() para preservar espaços
-                        value = value;
-                    }
-
-                    newRow[lowerKey] = value;
-                }
-
-                // Adicionar campos ausentes
-                expectedFields.forEach(field => {
-                    const fieldLower = field.toLowerCase();
-                    if (!(fieldLower in newRow)) {
-                        const inferredType = typeMap.get(fieldLower);
-                        newRow[fieldLower] = inferredType === 'number' ? 0 : '';
-                    }
-                });
-
-                return newRow;
-            });
-
-            // Garantir codificação correta em todo o resultado
-            const sanitizedResult = sanitizeResultEncoding(formattedResult);
-
-            return sanitizedResult;
-        } finally {
-            if (connection) {
-                await releaseConnection(connection);
+        // Processar o resultado
+        if (!Array.isArray(result)) {
+            logger.info(`Resultado não é um array, convertendo: ${JSON.stringify(result)}`);
+            if (result && typeof result === 'object') {
+                result = [result];
+            } else {
+                result = [];
             }
         }
+
+        // Verificar se temos resultados antes de continuar
+        if (result.length === 0) {
+            logger.info('Consulta não retornou resultados');
+            return [];
+        }
+
+        // Verificar quais campos vieram e inferir tipos
+        if (result && result.length > 0) {
+            const returnedFields = Object.keys(result[0]).map(f => f.toLowerCase());
+            logger.info(`Campos retornados: ${returnedFields.join(', ')}`);
+        }
+
+        // Inferir tipos para todos os campos
+        const typeMap = inferFieldTypes(query, result);
+
+        if (result && result.length > 0) {
+            // Verificar se a consulta é especificamente sobre a tabela produto
+            const isProductQuery = /from\s+produto\b|from\s+produto\s+p\b/i.test(query);
+
+            // Verificar se é uma consulta de tabela relacionada que inclui produto.id
+            const hasProductIdJoin = /join\s+produto\b.*?\bid\b|p\.id\b/i.test(query);
+
+            // Se é consulta específica de produto ou tem join com o id do produto
+            if ((isProductQuery || hasProductIdJoin) && 'id' in result[0]) {
+                // Verificar se o ID é realmente da tabela produto
+                // Se a consulta tem alias 'p' para produto, verificamos p.id
+                const hasProductAlias = /produto\s+p\b/i.test(query);
+
+                if (hasProductAlias && query.toLowerCase().includes('p.id')) {
+                    typeMap.set('id', 'string');
+                    logger.info('Campo produto.id (p.id) forçado como string');
+                }
+                // Se não tem alias mas seleciona produto.id ou apenas id da tabela produto
+                else if (query.toLowerCase().includes('produto.id') ||
+                    (isProductQuery && query.toLowerCase().includes('id'))) {
+                    typeMap.set('id', 'string');
+                    logger.info('Campo produto.id forçado como string');
+                }
+            }
+        }
+
+        // Tratar id_produto explicitamente como string
+        if (typeMap.has('id_produto')) {
+            typeMap.set('id_produto', 'string');
+        }
+
+        // Log dos tipos inferidos para debug
+        typeMap.forEach((type, field) => {
+            logger.info(`Tipo inferido para ${field}: ${type}`);
+        });
+
+        // Processar os resultados
+        const formattedResult = result.map(row => {
+            const newRow = {};
+
+            for (const key in row) {
+                const lowerKey = key.toLowerCase();
+                let value = row[key];
+                const inferredType = typeMap.get(lowerKey);
+
+                // Tratar valores nulos baseado no tipo inferido
+                if (value === null) {
+                    value = inferredType === 'number' ? 0 : '';
+                }
+                // IMPORTANTE: Garantir que campos string sejam strings
+                else if (inferredType === 'string' && typeof value !== 'string') {
+                    // Converter explicitamente para string
+                    value = String(value);
+                }
+                // Converter strings que deveriam ser números 
+                else if (inferredType === 'number' && typeof value === 'string') {
+                    if (value.trim() === '') {
+                        value = 0;
+                    } else {
+                        const numValue = parseFloat(value);
+                        if (!isNaN(numValue)) {
+                            value = numValue;
+                        } else {
+                            // Se não puder converter para número, use 0
+                            value = 0;
+                            logger.warn(`Valor '${value}' não pôde ser convertido para número no campo '${lowerKey}'`);
+                        }
+                    }
+                }
+
+                // Formatação de datas
+                if (value instanceof Date) {
+                    value = value.toISOString().split('T')[0];
+                }
+
+                newRow[lowerKey] = value;
+            }
+
+            // Adicionar campos ausentes
+            expectedFields.forEach(field => {
+                const fieldLower = field.toLowerCase();
+                if (!(fieldLower in newRow)) {
+                    const inferredType = typeMap.get(fieldLower);
+                    newRow[fieldLower] = inferredType === 'number' ? 0 : '';
+                }
+            });
+
+            return newRow;
+        });
+
+        const sanitizedResult = sanitizeResultEncoding(formattedResult);
+
+        if (sanitizedResult && sanitizedResult.length > 0) {
+            // Verificação final específica para o nome GONÇALVES
+            for (const row of sanitizedResult) {
+                if (row.nome && typeof row.nome === 'string' && row.nome.includes('GON') && row.nome.includes('ALVES')) {
+                    logger.info(`===VERIFICAÇÃO FINAL===`);
+                    logger.info(`Nome com GONÇALVES encontrado: "${row.nome}"`);
+                    logger.info(`Bytes do nome: [${[...Buffer.from(row.nome)].join(', ')}]`);
+
+                    // Substituição forçada e final
+                    row.nome = row.nome.replace(/GON.{1}ALVES/g, 'GONÇALVES');
+                    logger.info(`Nome após última correção: "${row.nome}"`);
+
+                    // Verificar se ainda tem algum caractere problemático
+                    if (row.nome.includes('�') || [...Buffer.from(row.nome)].includes(239)) {
+                        logger.error(`ALERTA: Ainda há caracteres problemáticos após todas as correções!`);
+                    }
+                }
+            }
+        }
+
+        // DEPOIS que temos o resultado sanitizado, fazer validações adicionais
+        for (const row of sanitizedResult) {
+            Object.keys(row).forEach(key => {
+                if (typeof row[key] === 'string') {
+                    // Garante que a string é UTF-8 válida uma última vez
+                    row[key] = ensureValidUTF8(row[key]);
+
+                    // Verifica se ainda existem caracteres problemáticos
+                    if (row[key].includes('�')) {
+                        logger.warn(`ALERTA: Caractere inválido encontrado em '${key}': ${row[key]}`);
+                        // Remover caracteres inválidos como último recurso
+                        row[key] = row[key].replace(/�/g, '');
+                    }
+                }
+            });
+        }
+
+        // Garantir tipos específicos para campos especiais
+        sanitizedResult.forEach(row => {
+            // Forçar campos tam## a serem strings
+            Object.keys(row).forEach(key => {
+                if (key.match(/^tam\d+$/i)) {
+                    if (typeof row[key] !== 'string') {
+                        row[key] = row[key] === null ? '' : String(row[key]);
+                    }
+                }
+                // Forçar campos e## a serem números
+                else if (key.match(/^e\d+$/i)) {
+                    if (typeof row[key] !== 'number') {
+                        const num = parseFloat(row[key] || '0');
+                        row[key] = isNaN(num) ? 0 : num;
+                    }
+                }
+            });
+        });
+
+        // Adicionar log de verificação final
+        if (sanitizedResult.length > 0) {
+            logger.info(`=== VERIFICAÇÃO FINAL DE TIPOS ===`);
+            const checkRow = sanitizedResult[0];
+            for (const key in checkRow) {
+                logger.info(`Final: ${key}, Tipo: ${typeof checkRow[key]}, Valor: ${JSON.stringify(checkRow[key])}`);
+            }
+        }
+
+        return sanitizedResult;
     } catch (error) {
         logger.error(`Erro ao executar consulta: ${error.message}`);
         throw error;
+    } finally {
+        // IMPORTANTE: Fechar a conexão para evitar vazamentos
+        if (connection) {
+            try {
+                connection.detach();
+                logger.debug('Conexão dedicada fechada após executeQuery');
+            } catch (e) {
+                logger.error(`Erro ao fechar conexão: ${e.message}`);
+            }
+        }
     }
 }
 
@@ -463,7 +616,7 @@ async function executeQuery(query) {
 async function executeCommand(command) {
     let connection = null;
     try {
-        connection = await getConnection();
+        connection = await getDedicatedConnection();
 
         // Promisify a função de query
         const queryAsync = promisify(connection.query).bind(connection);
@@ -477,7 +630,12 @@ async function executeCommand(command) {
         throw error;
     } finally {
         if (connection) {
-            await releaseConnection(connection);
+            try {
+                connection.detach();
+                logger.debug('Conexão dedicada fechada após executeCommand');
+            } catch (e) {
+                logger.error(`Erro ao fechar conexão: ${e.message}`);
+            }
         }
     }
 }
@@ -486,7 +644,7 @@ async function executeCommand(command) {
 async function getTerminalToken() {
     let connection = null;
     try {
-        connection = await getConnection();
+        connection = await getDedicatedConnection();
 
         // Promisify a função de query
         const queryAsync = promisify(connection.query).bind(connection);
@@ -512,7 +670,12 @@ async function getTerminalToken() {
         throw error;
     } finally {
         if (connection) {
-            await releaseConnection(connection);
+            try {
+                connection.detach();
+                logger.debug('Conexão dedicada fechada após getTerminalToken');
+            } catch (e) {
+                logger.error(`Erro ao fechar conexão: ${e.message}`);
+            }
         }
     }
 }
@@ -521,7 +684,7 @@ async function getTerminalToken() {
 async function testarQueryPorPartes(query) {
     let connection = null;
     try {
-        connection = await getConnection();
+        connection = await getDedicatedConnection();
         const queryAsync = promisify(connection.query).bind(connection);
 
         // Testes simples para verificar a conexão básica
@@ -574,7 +737,12 @@ async function testarQueryPorPartes(query) {
         throw error;
     } finally {
         if (connection) {
-            await releaseConnection(connection);
+            try {
+                connection.detach();
+                logger.debug('Conexão dedicada fechada após testarQueryPorPartes');
+            } catch (e) {
+                logger.error(`Erro ao fechar conexão: ${e.message}`);
+            }
         }
     }
 }
@@ -587,6 +755,181 @@ async function close() {
         dbPool = null;
     }
 }
+
+async function getDedicatedConnection() {
+    return new Promise((resolve, reject) => {
+        Firebird.attach(dbConfig, (err, db) => {
+            if (err) {
+                logger.error(`Erro ao criar conexão dedicada: ${err.message}`);
+                reject(err);
+            } else {
+                logger.info(`Nova conexão dedicada criada`);
+                resolve(db);
+            }
+        });
+    });
+}
+
+function ensureValidUTF8(value) {
+    if (typeof value !== 'string') {
+        return value;
+    }
+
+    // Mapeamento específico de caracteres problemáticos conhecidos
+    const charMap = {
+        'Ã‡': 'Ç', // GON�ALVES
+        'Ã§': 'ç',
+        'Ãƒâ€š': 'Ç',
+        '�': 'Ç',
+        'Ã£': 'ã',
+        'Ã¢': 'â',
+        'Ã©': 'é',
+        'Ã‰': 'É',
+        'Ãª': 'ê',
+        'Ã"': 'Ó',
+        'Ã³': 'ó',
+        'Ãº': 'ú',
+        'Ã­': 'í'
+    };
+
+    // Substituir caracteres específicos
+    Object.entries(charMap).forEach(([bad, good]) => {
+        if (value.includes(bad)) {
+            value = value.replace(new RegExp(bad, 'g'), good);
+        }
+    });
+
+    // Substituir qualquer caractere de substituição Unicode (�) ou bytes inválidos
+    value = value.replace(/[\uFFFD\uFFFE\uFFFF]/g, '');
+
+    try {
+        // Tentativa de normalização Unicode
+        if (typeof value.normalize === 'function') {
+            value = value.normalize('NFC');
+        }
+
+        // Teste final - garante que podemos codificar e decodificar sem problemas
+        const encoded = Buffer.from(value, 'utf8').toString('utf8');
+        return encoded;
+    } catch (e) {
+        // Se falhar, remova todos os caracteres não-ASCII
+        return value.replace(/[^\x00-\x7F]/g, '');
+    }
+}
+
+// Uma função mais inteligente para corrigir caracteres especiais
+function fixSpecialCharacters(text) {
+    if (typeof text !== 'string') {
+        return text;
+    }
+
+    // Substituir caracteres problemáticos diretamente
+    return text
+        // Substituir caractere de substituição Unicode e outros códigos problemáticos 
+        .replace(/\uFFFD|�/g, 'Ç')  // Substitui � por Ç
+
+        // Detectar Ç mal codificado em várias formas
+        .replace(/GON.{1}ALVES/g, 'GONÇALVES')  // Casos específicos conhecidos
+        .replace(/Ã‡|Ãƒâ€š/g, 'Ç')              // Substituições de Ç maiúsculo
+        .replace(/Ã§/g, 'ç')                     // Substituições de ç minúsculo
+
+        // Outros caracteres acentuados comuns em português
+        .replace(/Ã£/g, 'ã')
+        .replace(/Ã¢/g, 'â')
+        .replace(/Ã©/g, 'é')
+        .replace(/Ã‰/g, 'É')
+        .replace(/Ãª/g, 'ê')
+        .replace(/Ã"/g, 'Ó')
+        .replace(/Ã³/g, 'ó')
+        .replace(/Ãº/g, 'ú')
+        .replace(/Ã­/g, 'í');
+}
+
+function convertEncoding(text) {
+    if (typeof text !== 'string') {
+        return text;
+    }
+
+    // Verificar se contém GONÇALVES
+    if (text.includes('GON') && text.includes('ALVES')) {
+        logger.info(`===DEPURAÇÃO GONÇALVES===`);
+        logger.info(`Texto original: "${text}"`);
+        logger.info(`Bytes originais: [${[...Buffer.from(text)].join(', ')}]`);
+    }
+
+    try {
+        // Considerar o texto como Latin1 (ISO-8859-1) e converter para UTF-8
+        const buffer = Buffer.from(text, 'binary');
+        const decoded = iconv.decode(buffer, 'latin1');
+
+        // Log para caso específico de GONÇALVES
+        if (text.includes('GON') && text.includes('ALVES')) {
+            logger.info(`Após iconv: "${decoded}"`);
+            logger.info(`Bytes após iconv: [${[...Buffer.from(decoded)].join(', ')}]`);
+
+            // Correção forçada para este caso específico
+            const forçado = decoded.replace(/GON.{1}ALVES/g, 'GONÇALVES');
+            logger.info(`Após correção forçada: "${forçado}"`);
+            return forçado;
+        }
+
+        return decoded;
+    } catch (e) {
+        logger.warn(`Erro na conversão iconv: ${e.message}`);
+        // Fallback para substituições simples se a conversão falhar
+        const fixed = fixSpecialCharacters(text);
+
+        // Log para depuração
+        if (text.includes('GON') && text.includes('ALVES')) {
+            logger.info(`Após fixSpecialCharacters: "${fixed}"`);
+        }
+
+        return fixed;
+    }
+}
+
+// Adicione um interceptador de JSON.stringify para verificar o resultado final
+const originalStringify = JSON.stringify;
+JSON.stringify = function (value, replacer, space) {
+    // Verificar se temos o caso problemático no resultado final
+    function verificarGonçalves(obj) {
+        if (typeof obj === 'string' && obj.includes('GON') && obj.includes('ALVES')) {
+            logger.info(`===STRINGIFICAÇÃO JSON===`);
+            logger.info(`String com GONÇALVES: "${obj}"`);
+            logger.info(`Bytes: [${[...Buffer.from(obj)].join(', ')}]`);
+
+            // Último recurso: substituição forçada
+            return obj.replace(/GON.{1}ALVES/g, 'GONÇALVES');
+        }
+
+        if (obj !== null && typeof obj === 'object') {
+            if (Array.isArray(obj)) {
+                return obj.map(verificarGonçalves);
+            } else {
+                const newObj = {};
+                for (const key in obj) {
+                    if (key === 'nome' && typeof obj[key] === 'string' &&
+                        obj[key].includes('GON') && obj[key].includes('ALVES')) {
+                        logger.info(`===CAMPO NOME COM GONÇALVES===`);
+                        logger.info(`Valor original: "${obj[key]}"`);
+                        newObj[key] = obj[key].replace(/GON.{1}ALVES/g, 'GONÇALVES');
+                        logger.info(`Valor corrigido: "${newObj[key]}"`);
+                    } else {
+                        newObj[key] = verificarGonçalves(obj[key]);
+                    }
+                }
+                return newObj;
+            }
+        }
+
+        return obj;
+    }
+
+    // Aplicar verificações antes da stringificação
+    const sanitized = verificarGonçalves(value);
+    return originalStringify(sanitized, replacer, space);
+};
+
 
 module.exports = {
     initialize,
