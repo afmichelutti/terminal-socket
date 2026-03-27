@@ -1,0 +1,68 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_svg/svg.dart';
+import 'package:shop_blink/constants.dart';
+import 'package:shop_blink/ui/components/rounded_button.dart';
+import 'package:shop_blink/ui/screens/Login/login_screen.dart';
+import 'package:shop_blink/ui/screens/Signup/signup_screen.dart';
+import 'package:shop_blink/ui/screens/wellcome/components/background.dart';
+
+class Body extends StatelessWidget {
+  const Body({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    Size size = MediaQuery.of(context).size;
+    // This size provide us total height and width of our screen
+    return Background(
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            const Text(
+              "Bem-vindo ao Shop VisualControl",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: size.height * 0.05),
+            SvgPicture.asset(
+              "assets/icons/chat.svg",
+              height: size.height * 0.45,
+            ),
+            SizedBox(height: size.height * 0.05),
+            RoundedButton(
+              text: "Entrar",
+              press: () {
+                Navigator.pushReplacementNamed(context, LoginScreen.routeName);
+                // Navigator.push(
+                //   context,
+                //   MaterialPageRoute(
+                //     builder: (context) {
+                //       return const LoginScreen();
+                //     },
+                //   ),
+                // );
+              },
+              color: kPrimaryColor,
+              textColor: Colors.white,
+            ),
+            RoundedButton(
+              text: "Cadastre-se",
+              color: kPrimaryLightColor,
+              textColor: Colors.black,
+              press: () {
+                Navigator.pushReplacementNamed(context, SignUpScreen.routeName);
+                // Navigator.push(
+                //   context,
+                //   MaterialPageRoute(
+                //     builder: (context) {
+                //       return const SignUpScreen();
+                //     },
+                //   ),
+                // );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
